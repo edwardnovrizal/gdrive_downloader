@@ -2,7 +2,28 @@ const fs = require("fs");
 const axios = require("axios");
 const puppeteer = require("puppeteer");
 const path = require("path");
-const config = require("./config");
+
+// Auto-detect environment and load appropriate config
+let config;
+const isProduction = process.env.NODE_ENV === 'production';
+const isServer = !process.env.DISPLAY && !process.env.SSH_CLIENT; // Detect headless server
+
+if (fs.existsSync('./config.server.js')) {
+  config = require("./config.server");
+  console.log("📋 Using server configuration");
+} else if (fs.existsSync('./config.production.js') && (isProduction || isServer)) {
+  config = require("./config.production");
+  console.log("📋 Using production configuration");
+} else {
+  config = require("./config");
+  console.log("📋 Using development configuration");
+}
+
+// Force headless mode in production/server environment
+if (isProduction || isServer) {
+  config.PUPPETEER_CONFIG.headless = true;
+  console.log("🖥️  Headless mode enforced for server environment");
+}
 
 const URLS_FILE = config.URLS_FILE;
 const DOWNLOAD_DIR = config.DOWNLOAD_DIR;
@@ -348,11 +369,75 @@ async function downloadFile(fileId, name, targetDir, retries = config.MAX_RETRIE
   }
 }
 
+// Enhanced logging for server environment
+function logWithTimestamp(message) {
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] ${message}`;
+  console.log(logMessage);
+  
+  // Write to log file if configured
+  if (config.SERVER_CONFIG && config.SERVER_CONFIG.ENABLE_LOGGING) {
+    const logFile = config.SERVER_CONFIG.LOG_FILE || './scraper.log';
+    try {
+      fs.appendFileSync(logFile, logMessage + '\n');
+    } catch (err) {
+      // Ignore log file errors to avoid breaking the main process
+    }
+  }
+}
+
+// Check system resources (for shared hosting)
+function checkSystemResources() {
+  try {
+    const used = process.memoryUsage();
+    const memoryMB = Math.round(used.rss / 1024 / 1024);
+    logWithTimestamp(`💾 Memory usage: ${memoryMB} MB`);
+    
+    // Warning if memory usage is high (>500MB for shared hosting)
+    if (memoryMB > 500) {
+      logWithTimestamp("⚠️  High memory usage detected. Consider reducing concurrent operations.");
+    }
+    
+    return { memoryMB };
+  } catch (error) {
+    logWithTimestamp("❌ Could not check system resources: " + error.message);
+    return null;
+  }
+}
+
+// Graceful shutdown handler
+process.on('SIGTERM', () => {
+  logWithTimestamp("🛑 Received SIGTERM, shutting down gracefully...");
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  logWithTimestamp("🛑 Received SIGINT, shutting down gracefully...");
+  process.exit(0);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  logWithTimestamp("💥 Uncaught Exception: " + error.message);
+  logWithTimestamp("Stack: " + error.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  logWithTimestamp("💥 Unhandled Rejection at: " + promise + " reason: " + reason);
+  process.exit(1);
+});
+
 async function main() {
   try {
-    console.log("🚀 Memulai scraping Google Drive Multi-Folder...");
-    console.log("📁 Download Directory:", DOWNLOAD_DIR);
-    console.log("📄 URLs File:", URLS_FILE);
+    logWithTimestamp("🚀 Memulai scraping Google Drive Multi-Folder...");
+    logWithTimestamp("📁 Download Directory: " + DOWNLOAD_DIR);
+    logWithTimestamp("📄 URLs File: " + URLS_FILE);
+    logWithTimestamp("🖥️  Environment: " + (process.env.NODE_ENV || 'development'));
+    
+    // Check initial system resources
+    checkSystemResources();
+    
     console.log("=".repeat(60));
     
     // Baca daftar URLs dari file
